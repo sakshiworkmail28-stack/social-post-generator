@@ -16,27 +16,26 @@ const IG_DIMS = [
   'Story / Reel (1080×1920)',
 ];
 
-/* ── Platform / post-type toggle handlers ────────────────────────────────── */
+/* ── Platform / post-type toggles ────────────────────────────────────────── */
 function selectPlatform(btn) {
   platform = btn.dataset.value;
   document.getElementById('platform').value = platform;
-
   document.querySelectorAll('#platformGroup .toggle-btn')
     .forEach(b => b.classList.remove('active-fb', 'active-ig'));
   btn.classList.add(platform === 'facebook' ? 'active-fb' : 'active-ig');
-
-  const dims = platform === 'facebook' ? FB_DIMS : IG_DIMS;
-  const sel  = document.getElementById('dimension');
-  sel.innerHTML = dims.map(d => `<option value="${d}">${d}</option>`).join('');
+  const sel = document.getElementById('dimension');
+  sel.innerHTML = (platform === 'facebook' ? FB_DIMS : IG_DIMS)
+    .map(d => `<option value="${d}">${d}</option>`).join('');
 }
 
 function selectPostType(btn) {
   postType = btn.dataset.value;
   document.getElementById('postType').value = postType;
-
   document.querySelectorAll('#postTypeGroup .toggle-btn')
     .forEach(b => b.classList.remove('active-accent'));
   btn.classList.add('active-accent');
+  document.getElementById('imageNote').style.display =
+    postType === 'image' ? 'block' : 'none';
 }
 
 /* ── Utilities ───────────────────────────────────────────────────────────── */
@@ -61,6 +60,118 @@ function clearError() {
   document.getElementById('errorBox').hidden = true;
 }
 
+/* ── Text overlay controls ───────────────────────────────────────────────── */
+function updateOverlay(idx, prop, val) {
+  const overlay = document.getElementById(`overlay${idx}`);
+  if (!overlay) return;
+
+  if (prop === 'size') {
+    overlay.style.fontSize = val + 'px';
+    const el = document.getElementById(`sizeVal${idx}`);
+    if (el) el.textContent = val + 'px';
+
+  } else if (prop === 'color') {
+    overlay.style.color = val;
+
+  } else if (prop === 'pos') {
+    overlay.dataset.pos    = val;
+    overlay.style.top      = val === 'top'    ? '0'     : val === 'center' ? '50%' : 'auto';
+    overlay.style.bottom   = val === 'bottom' ? '0'     : 'auto';
+    overlay.style.transform = val === 'center' ? 'translateY(-50%)' : '';
+
+    // Sync active button state
+    const card = overlay.closest('.post-card-body');
+    if (card) {
+      card.querySelectorAll('.pos-btn').forEach(b =>
+        b.classList.toggle('active-pos', b.dataset.pos === val)
+      );
+    }
+  }
+}
+
+/* ── Download image only (no text) ──────────────────────────────────────── */
+function downloadImg(idx) {
+  const post = (window._generatedPosts || [])[idx];
+  if (!post?.image_url) return;
+  const a = document.createElement('a');
+  a.href     = post.image_url;
+  a.download = `post-image-${idx + 1}.png`;
+  a.click();
+}
+
+/* ── Download composited image (image + text baked in via Canvas) ────────── */
+function downloadComposite(idx) {
+  const post    = (window._generatedPosts || [])[idx];
+  const overlay = document.getElementById(`overlay${idx}`);
+  const imgEl   = document.getElementById(`postImg${idx}`);
+  if (!post?.image_url || !overlay || !imgEl) return;
+
+  const canvas  = document.createElement('canvas');
+  canvas.width  = imgEl.naturalWidth  || 1024;
+  canvas.height = imgEl.naturalHeight || 1024;
+  const ctx = canvas.getContext('2d');
+
+  ctx.drawImage(imgEl, 0, 0, canvas.width, canvas.height);
+
+  // Scale factors from display size to natural resolution
+  const scaleX = canvas.width  / (imgEl.offsetWidth  || canvas.width);
+  const scaleY = canvas.height / (imgEl.offsetHeight || canvas.height);
+  const scale  = Math.max(scaleX, scaleY);
+
+  const fontSize = parseFloat(overlay.style.fontSize) || 22;
+  const color    = overlay.style.color  || '#ffffff';
+  const pos      = overlay.dataset.pos  || 'bottom';
+  const text     = post.post_text || '';
+
+  const scaledFont = Math.round(fontSize * scale);
+  ctx.font      = `bold ${scaledFont}px 'Segoe UI', Arial, sans-serif`;
+  ctx.textAlign = 'center';
+
+  // Word-wrap text to fit canvas width
+  const maxW  = canvas.width * 0.88;
+  const lineH = scaledFont * 1.45;
+  const words = text.split(' ');
+  const lines = [];
+  let cur = '';
+
+  for (const word of words) {
+    const test = cur ? cur + ' ' + word : word;
+    if (ctx.measureText(test).width > maxW && cur) {
+      lines.push(cur);
+      cur = word;
+    } else {
+      cur = test;
+    }
+  }
+  if (cur) lines.push(cur);
+
+  const pad   = scaledFont * 0.75;
+  const bgH   = lines.length * lineH + pad * 2;
+  const bgY   = pos === 'top'    ? 0
+               : pos === 'center' ? (canvas.height - bgH) / 2
+               :                    canvas.height - bgH;
+
+  // Semi-transparent background strip
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillRect(0, bgY, canvas.width, bgH);
+
+  // Text lines
+  ctx.fillStyle = color;
+  let ty = bgY + pad + scaledFont * 0.85;
+  for (const line of lines) {
+    ctx.fillText(line, canvas.width / 2, ty);
+    ty += lineH;
+  }
+
+  canvas.toBlob(blob => {
+    const a = document.createElement('a');
+    a.href     = URL.createObjectURL(blob);
+    a.download = `social-post-${idx + 1}.jpg`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }, 'image/jpeg', 0.92);
+}
+
 /* ── Copy post text to clipboard ─────────────────────────────────────────── */
 function copyPost(btn, idx) {
   const post = (window._generatedPosts || [])[idx];
@@ -72,16 +183,6 @@ function copyPost(btn, idx) {
     btn.classList.add('copied');
     setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 1800);
   });
-}
-
-/* ── Download a generated image ──────────────────────────────────────────── */
-function downloadImg(idx) {
-  const post = (window._generatedPosts || [])[idx];
-  if (!post?.image_url) return;
-  const a = document.createElement('a');
-  a.href     = post.image_url;
-  a.download = `post-image-${idx + 1}.jpg`;
-  a.click();
 }
 
 /* ── Render results ──────────────────────────────────────────────────────── */
@@ -98,14 +199,13 @@ function renderResults(posts, emailStatus, dimension, charLimit) {
   const toastMap = {
     sent:    { cls: 'sent',   icon: '✅', msg: 'Posts emailed successfully!' },
     failed:  { cls: 'failed', icon: '⚠️', msg: 'Email failed — check RESEND_API_KEY in .env.' },
-    skipped: { cls: 'skip',   icon: 'ℹ️', msg: 'Email not configured — add RESEND_API_KEY to .env to enable.' },
+    skipped: { cls: 'skip',   icon: 'ℹ️', msg: 'Email not configured — add RESEND_API_KEY to .env.' },
   };
   const toast = toastMap[emailStatus] || toastMap.skipped;
 
   let html = `
     <div class="email-toast ${toast.cls}">
-      <span>${toast.icon}</span>
-      <span>${toast.msg}</span>
+      <span>${toast.icon}</span><span>${toast.msg}</span>
     </div>`;
 
   posts.forEach((post, i) => {
@@ -123,25 +223,55 @@ function renderResults(posts, emailStatus, dimension, charLimit) {
 
     if (postType === 'image') {
       if (post.image_url) {
-        // Image returned as base64 data URI — display immediately
+        // ── Image with live text overlay ──────────────────────────────────
         mediaHtml = `
           <div class="post-image-wrap">
-            <img class="generated-img" src="${post.image_url}"
-                 alt="Generated post image" />
-            <div class="img-action-bar" style="display:flex">
-              <button class="btn-img-action" onclick="downloadImg(${i})">⬇ Download</button>
+            <div class="post-image-container" id="imgContainer${i}">
+              <img class="generated-img" src="${post.image_url}"
+                   id="postImg${i}" alt="Generated post image" />
+              <div class="text-overlay" id="overlay${i}" data-pos="bottom">
+                ${escHtml(text)}
+              </div>
+            </div>
+
+            <div class="overlay-controls">
+              <div class="control-group">
+                <span class="control-label">Size</span>
+                <input type="range" class="size-slider" min="12" max="60" value="22"
+                       oninput="updateOverlay(${i},'size',this.value)" />
+                <span class="size-val" id="sizeVal${i}">22px</span>
+              </div>
+              <div class="control-group">
+                <span class="control-label">Position</span>
+                <div class="pos-btn-group">
+                  <button class="pos-btn" data-pos="top"    onclick="updateOverlay(${i},'pos','top')">Top</button>
+                  <button class="pos-btn" data-pos="center" onclick="updateOverlay(${i},'pos','center')">Center</button>
+                  <button class="pos-btn active-pos" data-pos="bottom" onclick="updateOverlay(${i},'pos','bottom')">Bottom</button>
+                </div>
+              </div>
+              <div class="control-group">
+                <span class="control-label">Color</span>
+                <input type="color" class="color-picker" value="#ffffff"
+                       oninput="updateOverlay(${i},'color',this.value)" />
+              </div>
+            </div>
+
+            <div class="img-action-bar">
+              <button class="btn-img-action" onclick="downloadComposite(${i})">⬇ Download with text</button>
+              <button class="btn-img-action" onclick="downloadImg(${i})">⬇ Image only</button>
             </div>
           </div>`;
+
       } else {
-        // Image generation was skipped or failed
-        const msg = post.image_error || 'Image generation is not configured.';
+        // ── Image generation failed or not configured ─────────────────────
+        const msg = post.image_error || 'Image generation not configured.';
         mediaHtml = `
           <div class="post-image-wrap">
             <div class="img-error-state">⚠️ ${escHtml(msg)}</div>
           </div>`;
       }
     } else {
-      // Text post — show dimension preview
+      // ── Text post — show dimension preview ────────────────────────────────
       const match = dimension.match(/(\d+)[×x](\d+)/);
       if (match) {
         const ow = parseInt(match[1]), oh = parseInt(match[2]);
@@ -166,7 +296,7 @@ function renderResults(posts, emailStatus, dimension, charLimit) {
             <span class="platform-badge ${badgeClass}">${platformName}</span>
           </div>
           <div class="post-card-actions">
-            <button class="btn-sm" onclick="copyPost(this, ${i})">Copy</button>
+            <button class="btn-sm" onclick="copyPost(this,${i})">Copy</button>
           </div>
         </div>
         <div class="post-card-body">
@@ -204,13 +334,12 @@ async function generate() {
   if (isNaN(charLimit) || charLimit < 10) return showError('Please enter a valid character limit.');
 
   const btn = document.getElementById('generateBtn');
-  btn.disabled    = true;
-  btn.innerHTML   = postType === 'image'
+  btn.disabled  = true;
+  btn.innerHTML = postType === 'image'
     ? '<span class="spinner"></span>Generating posts &amp; images…'
     : '<span class="spinner"></span>Generating posts…';
   document.getElementById('results').hidden = true;
 
-  // 3-minute timeout (image generation can take up to ~90s per batch)
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 180_000);
 
@@ -233,11 +362,10 @@ async function generate() {
     renderResults(data.posts, data.emailStatus, dimension, charLimit);
 
   } catch (err) {
-    if (err.name === 'AbortError') {
-      showError('Request timed out. Image generation can be slow — please try again.');
-    } else {
-      showError('Error: ' + err.message);
-    }
+    showError(err.name === 'AbortError'
+      ? 'Request timed out. Image generation can take up to 60s — please try again.'
+      : 'Error: ' + err.message
+    );
   } finally {
     clearTimeout(timer);
     btn.disabled  = false;
