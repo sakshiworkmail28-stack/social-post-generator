@@ -1,43 +1,51 @@
 require('dotenv').config();
 
 const express   = require('express');
+const cors      = require('cors');
 const path      = require('path');
 const Anthropic = require('@anthropic-ai/sdk');
 const { Resend } = require('resend');
 
 const app = express();
+app.use(cors());
 app.use(express.json({ limit: '1mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ── Validate required key ────────────────────────────────────────────────────
-if (!process.env.ANTHROPIC_API_KEY) {
-  console.error('FATAL: ANTHROPIC_API_KEY is not set in .env');
-  process.exit(1);
+// ── Explicit root route ───────────────────────────────────────────────────────
+app.get('/', (_req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// ── API keys & feature flags ──────────────────────────────────────────────────
+const ANTHROPIC_KEY   = (process.env.ANTHROPIC_API_KEY || '').trim();
+const HF_TOKEN        = (process.env.HF_TOKEN          || '').trim();
+const RESEND_KEY      = (process.env.RESEND_API_KEY    || '').trim();
+const RESEND_FROM_ENV = (process.env.RESEND_FROM       || '').trim();
+
+if (!ANTHROPIC_KEY) {
+  console.warn('⚠  ANTHROPIC_API_KEY is not set — post generation will fail until it is added.');
 }
 
-// ── Clients ──────────────────────────────────────────────────────────────────
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-const resend    = new Resend(process.env.RESEND_API_KEY || 'placeholder');
+const anthropicConfigured = ANTHROPIC_KEY.length > 0;
+const hfConfigured        = HF_TOKEN.length > 0 && !HF_TOKEN.startsWith('hf_your');
+const emailConfigured     = RESEND_KEY.length > 0 && !RESEND_KEY.startsWith('re_your');
 
-// ── Feature flags (checked at startup and per-request) ───────────────────────
-const HF_TOKEN      = (process.env.HF_TOKEN     || '').trim();
-const RESEND_KEY    = (process.env.RESEND_API_KEY || '').trim();
-const RESEND_FROM_ENV = (process.env.RESEND_FROM || '').trim();
-
-const hfConfigured    = HF_TOKEN.length > 0    && !HF_TOKEN.startsWith('hf_your');
-const emailConfigured = RESEND_KEY.length > 0  && !RESEND_KEY.startsWith('re_your');
-
-// Sender address: use env value unless it's a placeholder or unset
 const RESEND_FROM = (RESEND_FROM_ENV && !RESEND_FROM_ENV.includes('yourdomain'))
   ? RESEND_FROM_ENV
   : 'Social Post Generator <onboarding@resend.dev>';
 
-console.log('\n✦ Social Post Generator');
-console.log(`  Images  : ${hfConfigured    ? '✓ HuggingFace configured'    : '✗ HF_TOKEN missing — image posts disabled'}`);
-console.log(`  Email   : ${emailConfigured ? '✓ Resend configured'         : '✗ RESEND_API_KEY missing — email disabled'}`);
-console.log(`  Sender  : ${RESEND_FROM}\n`);
+// ── Clients ───────────────────────────────────────────────────────────────────
+const anthropic = anthropicConfigured
+  ? new Anthropic({ apiKey: ANTHROPIC_KEY })
+  : null;
+const resend = new Resend(RESEND_KEY || 'placeholder');
 
-// ── HTML escape helper (used in email builder) ───────────────────────────────
+console.log('\n✦ Social Post Generator');
+console.log(`  Claude  : ${anthropicConfigured ? '✓ configured' : '✗ ANTHROPIC_API_KEY missing'}`);
+console.log(`  Images  : ${hfConfigured        ? '✓ HuggingFace configured'  : '✗ HF_TOKEN missing — image posts disabled'}`);
+console.log(`  Email   : ${emailConfigured     ? '✓ Resend configured'       : '✗ RESEND_API_KEY missing — email disabled'}`);
+
+// ── HTML escape helper ────────────────────────────────────────────────────────
 function esc(s) {
   return String(s || '')
     .replace(/&/g, '&amp;')
@@ -46,19 +54,18 @@ function esc(s) {
     .replace(/"/g, '&quot;');
 }
 
-// ── Map dimension label → HF pixel sizes (multiples of 8, max 1024) ─────────
+// ── Map dimension label → HF pixel sizes ─────────────────────────────────────
 function getDimForHF(dimStr) {
   const match = dimStr.match(/(\d+)[×x](\d+)/);
   if (!match) return { w: 1024, h: 1024 };
   const ratio = parseInt(match[1]) / parseInt(match[2]);
-  if (ratio >= 1.6)  return { w: 1024, h: 576  };  // wide  16:9
-  if (ratio >= 0.95) return { w: 1024, h: 1024 };  // square
-  if (ratio >= 0.7)  return { w: 832,  h: 1024 };  // portrait 4:5
-  return                     { w: 576,  h: 1024 };  // tall  9:16
+  if (ratio >= 1.6)  return { w: 1024, h: 576  };
+  if (ratio >= 0.95) return { w: 1024, h: 1024 };
+  if (ratio >= 0.7)  return { w: 832,  h: 1024 };
+  return                     { w: 576,  h: 1024 };
 }
 
-// ── Generate one image via HuggingFace Inference API ─────────────────────────
-// Returns a base64 data URI, or throws on failure.
+// ── Generate image via HuggingFace ────────────────────────────────────────────
 async function generateImageHF(prompt, w, h) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 90_000);
@@ -70,8 +77,8 @@ async function generateImageHF(prompt, w, h) {
         method:  'POST',
         signal:  controller.signal,
         headers: {
-          Authorization:     `Bearer ${HF_TOKEN}`,
-          'Content-Type':    'application/json',
+          Authorization:      `Bearer ${HF_TOKEN}`,
+          'Content-Type':     'application/json',
           'x-wait-for-model': 'true',
         },
         body: JSON.stringify({
@@ -83,7 +90,7 @@ async function generateImageHF(prompt, w, h) {
 
     if (!resp.ok) {
       const body = await resp.text().catch(() => '');
-      throw new Error(`HF API returned ${resp.status} — ${body.slice(0, 200)}`);
+      throw new Error(`HF API ${resp.status} — ${body.slice(0, 200)}`);
     }
 
     const buf = await resp.arrayBuffer();
@@ -95,7 +102,7 @@ async function generateImageHF(prompt, w, h) {
   }
 }
 
-// ── Build HTML email ─────────────────────────────────────────────────────────
+// ── Build HTML email ──────────────────────────────────────────────────────────
 function buildEmailHtml({ posts, platform, dimension }) {
   const platformLabel = platform
     ? platform.charAt(0).toUpperCase() + platform.slice(1)
@@ -106,7 +113,6 @@ function buildEmailHtml({ posts, platform, dimension }) {
       .map(h => `<span style="display:inline-block;background:#ede9fe;color:#5b21b6;border-radius:12px;padding:3px 10px;font-size:12px;margin:2px 3px 2px 0;">${esc(h)}</span>`)
       .join('');
 
-    // Email clients block data URIs — show a note for generated images
     const imgHtml = post.image_url && !post.image_url.startsWith('data:')
       ? `<div style="margin:14px 0 10px;border-radius:10px;overflow:hidden;">
            <img src="${esc(post.image_url)}" alt="Generated image"
@@ -115,7 +121,7 @@ function buildEmailHtml({ posts, platform, dimension }) {
       : post.image_url
         ? `<div style="background:#f8f5ff;border:1px dashed #c4b5fd;border-radius:8px;
                        padding:10px 14px;margin:14px 0 10px;font-size:12px;color:#6d28d9;">
-             🖼 AI image was generated — view and download it in the web app.
+             🖼 AI image generated — view and download it in the web app.
            </div>`
         : '';
 
@@ -162,20 +168,21 @@ function buildEmailHtml({ posts, platform, dimension }) {
 </html>`;
 }
 
-// ── GET /api/status — admin health check ─────────────────────────────────────
+// ── GET /api/status ───────────────────────────────────────────────────────────
 app.get('/api/status', (_req, res) => {
   res.json({
-    images: hfConfigured
-      ? 'configured'
-      : 'not configured — set HF_TOKEN in .env (free at huggingface.co/settings/tokens)',
-    email: emailConfigured
-      ? 'configured'
-      : 'not configured — set RESEND_API_KEY in .env (free at resend.com)',
+    claude: anthropicConfigured ? 'configured' : 'missing — set ANTHROPIC_API_KEY',
+    images: hfConfigured        ? 'configured' : 'missing — set HF_TOKEN',
+    email:  emailConfigured     ? 'configured' : 'missing — set RESEND_API_KEY',
   });
 });
 
 // ── POST /api/generate ────────────────────────────────────────────────────────
 app.post('/api/generate', async (req, res) => {
+  if (!anthropicConfigured) {
+    return res.status(503).json({ error: 'Server not configured: ANTHROPIC_API_KEY is missing.' });
+  }
+
   const {
     idea, email, platform, dimension,
     postType, textLength, charLimit, tone, numPosts,
@@ -220,14 +227,14 @@ Rules:
 - Each post must have a distinct angle or hook
 - Tone: ${tone}`;
 
-  // ── 1. Generate post text via Claude ─────────────────────────────────────
+  // 1. Generate post text via Claude
   let posts;
   try {
     const msg = await anthropic.messages.create({
-      model:     'claude-opus-4-6',
+      model:      'claude-opus-4-6',
       max_tokens: 2048,
-      system:    systemPrompt,
-      messages:  [{ role: 'user', content: userPrompt }],
+      system:     systemPrompt,
+      messages:   [{ role: 'user', content: userPrompt }],
     });
 
     const raw   = msg.content.find(b => b.type === 'text')?.text || '';
@@ -239,7 +246,7 @@ Rules:
     return res.status(502).json({ error: 'Failed to generate posts. Please try again.' });
   }
 
-  // ── 2. Generate images via HuggingFace (parallel, server-side) ───────────
+  // 2. Generate images via HuggingFace (parallel, server-side)
   if (postType === 'image') {
     if (!hfConfigured) {
       posts.forEach(p => { p.image_url = null; p.image_error = 'HF_TOKEN not configured'; });
@@ -259,7 +266,7 @@ Rules:
     }
   }
 
-  // ── 3. Send email via Resend ──────────────────────────────────────────────
+  // 3. Send email via Resend
   let emailStatus = 'skipped';
 
   if (emailConfigured) {
@@ -291,9 +298,8 @@ Rules:
   res.json({ posts, emailStatus });
 });
 
-// ── Start ─────────────────────────────────────────────────────────────────────
+// ── Start server ──────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`  URL     : http://localhost:${PORT}`);
-  console.log(`  Status  : http://localhost:${PORT}/api/status\n`);
+  console.log(`  Server running on port ${PORT}\n`);
 });
