@@ -188,10 +188,15 @@ app.post('/api/generate', async (req, res) => {
   const lengthDesc  = ({ short: '1–2 sentences', medium: '3–4 sentences', long: '5–7 sentences' })[textLength] || '3–4 sentences';
 
   const imageInstruction = postType === 'image'
-    ? `Each post MUST include an "image_prompt" field: a vivid, photorealistic DALL-E 3 prompt
-       (2–4 sentences) describing the scene, lighting, style, mood, and composition that best
-       represents the post. Do NOT include any text, words, or captions in the image_prompt —
-       the image should be purely visual.`
+    ? `Each post MUST include an "image_prompt" field: a marketing poster style DALL-E 3 prompt (2–4 sentences).
+       Rules for image_prompt:
+       - Marketing poster style (modern startup / tech advertising aesthetic)
+       - Clear, prominent subject that represents the post topic
+       - Leave empty space at the TOP of the image for a headline text overlay
+       - High contrast lighting, clean background
+       - Photorealistic, professional advertising quality
+       - Do NOT include any text, words, numbers, or captions inside the image — purely visual
+       Example: "modern marketing poster, smartphone showing a productivity app interface, professional workspace background, soft studio lighting, realistic hands holding phone, high contrast, minimal composition, empty space at top for headline, startup advertisement style"`
     : 'Set "image_prompt" to an empty string "".';
 
   const systemPrompt =
